@@ -6,6 +6,7 @@ import time
 import logging.handlers
 
 queue = Queue(0)
+redisserver='10.9.132.201'
 
 class StructuredMessage(object):
     def __init__(self,time,sip,dip,request,state,durtime):
@@ -46,7 +47,7 @@ def plog(q,p,connection):
 
 def split():
     print "split start"
-    c=redis.StrictRedis(host='10.9.132.201', port=6379, db=2)
+    c=redis.StrictRedis(host=redisserver, port=6379, db=2)
     while True:
         try:
             k=c.randomkey()
