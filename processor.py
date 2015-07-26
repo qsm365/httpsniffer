@@ -6,9 +6,10 @@ import time
 import logging.handlers
 
 queue = Queue(0)
-redisserver='10.9.132.201'
+#redisserver='10.9.132.201'
+redisserver='127.0.0.1'
 
-class StructuredMessage(object):
+class StructuredMessage1(object):
     def __init__(self,time,sip,dip,request,state,durtime):
         self.time=time
         self.sip=sip
@@ -19,31 +20,67 @@ class StructuredMessage(object):
     def __str__(self):
         return '%d-%s-%s-"%s"-%s-%d' % (self.time,self.sip,self.dip,self.request,self.state,self.durtime)
 
-_=StructuredMessage
-LOG_FILENAME = '/var/log/sniffer/data'
+class StructuredMessage2(object):
+    def __init__(self,time,sip,dip,result,durtime):
+        self.time=time
+        self.sip=sip
+        self.dip=dip
+        self.result=result
+        self.durtime=durtime
+    def __str__(self):
+        return '%d-%s-%s-"%s"-%d' % (self.time,self.sip,self.dip,self.result,self.durtime)
+
+_1=StructuredMessage1
+_2=StructuredMessage2
+LOG_FILENAME1 = '/var/log/sniffer/data'
+LOG_FILENAME2 = '/var/log/sniffer/connection'
 logging.basicConfig(level=logging.INFO, format='%(message)s')
-my_logger = logging.getLogger('MyLogger')
-my_logger.propagate = False
-my_logger.setLevel(logging.INFO)
+
+my_logger1 = logging.getLogger('MyLogger1')
+my_logger1.propagate = False
+my_logger1.setLevel(logging.INFO)
 #handler = logging.handlers.RotatingFileHandler(LOG_FILENAME, maxBytes=10485760, backupCount=100)
-handler = logging.handlers.TimedRotatingFileHandler(LOG_FILENAME,'M',30,0)
-handler.suffix = "%Y%m%d%H%M.log"
-my_logger.addHandler(handler)
+handler1 = logging.handlers.TimedRotatingFileHandler(LOG_FILENAME1,'M',30,0)
+handler1.suffix = "%Y%m%d%H%M.log"
+my_logger1.addHandler(handler1)
+
+my_logger2 = logging.getLogger('MyLogger2')
+my_logger2.propagate = False
+my_logger2.setLevel(logging.INFO)
+#handler = logging.handlers.RotatingFileHandler(LOG_FILENAME, maxBytes=10485760, backupCount=100)
+handler2 = logging.handlers.TimedRotatingFileHandler(LOG_FILENAME2,'M',30,0)
+handler2.suffix = "%Y%m%d%H%M.log"
+my_logger2.addHandler(handler2)
+
 
 def plog(q,p,connection):
-    durtime=p['time']-q['time']
-    state="unknown"
+    durtime=0
+    state="999"
+    if p:
+        durtime=p['time']-q['time']
+        status=p['status'].split()
+        if len(status)>1:
+            state=status[1]
     sip="0.0.0.0:0"
     dip="0.0.0.0:0"
-    status=p['status'].split()
-    if len(status)>1:
-        state=status[1]
     src=re.compile(":|-").split(connection)
     if len(src)>3:
         dip=src[0]+":"+src[1]
         sip=q['X-Forwarded-For'] if 'X-Forwarded-For' in q else src[2]
-    my_logger.info(_(q['time'],sip,dip,q['request'],state,durtime))
+    my_logger1.info(_1(q['time'],sip,dip,q['request'],state,durtime))
     #print(str(q['time'])+"-"+sip+"-"+dip+"-"+q['request']+"-"+state+'-'+str(durtime))
+
+def clog(connection,c1,c2):
+    src=re.compile(":|-").split(connection)
+    if len(src)>3:
+        dip=src[2]+":"+src[3]
+        sip=src[0]
+    result='connection failed'
+    durtime=0
+    if c2:
+        result='connected'
+        durtime=c2-c1
+    my_logger2.info(_2(c1,sip,dip,result,durtime))
 
 def split():
     print "split start"
@@ -60,12 +97,40 @@ def split():
                     if t<(nowtime-300):
                         queue.put_nowait(k)
         except:
-            print "split error"
+            pass
+
+def checkconnection():
+    print "checkconnection start"
+    h1 = redis.StrictRedis(host=redisserver, port=6379, db=3)
+    h2 = redis.StrictRedis(host=redisserver, port=6379, db=4)
+    while True:
+        try:
+            k=h1.randomkey()
+            if h2.exists(str(k)+"-sa"):
+                p1=h1.pipeline()
+                p1.get(k)
+                p1.delete(k)
+                t1=p1.execute()
+                p2=h2.pipeline()
+                p2.get(k+"-sa")
+                p2.delete(k+"-sa")
+                t2=p2.execute()
+                clog(k,int(t1[0]),int(t2[0]))
+            else:
+                t1=h1.get(k)
+                if t1:
+                    t=int(t1)
+                    nowtime=int(time.time())
+                    if t<(nowtime-5):
+                        h1.delete(k)
+                        clog(k,t,False)
+        except:
+            pass
 
 def prc():
     print "prc start"
-    r=redis.StrictRedis(host='10.9.132.201', port=6379, db=1)
-    c=redis.StrictRedis(host='10.9.132.201', port=6379, db=2)
+    r=redis.StrictRedis(host=redisserver, port=6379, db=1)
+    c=redis.StrictRedis(host=redisserver, port=6379, db=2)
     while True:
         try:
             connection=queue.get(1)
@@ -93,40 +158,53 @@ def prc():
                         #print "test"
                         req=sorted(req, key=itemgetter('seqnum'))
                         rep=sorted(rep, key=itemgetter('seqnum'))
-                
                         for i in range(len(req)):
                             q1=req[i]
                             if i+1<len(req):
                                 q2=req[i+1]
                                 s1=int(q1['acknum'])
                                 s2=int(q2['acknum'])
-                                for j in range(len(rep)):
+                                lrep=len(rep)
+                                for j in range(lrep):
                                     p1=rep[j]
                                     if int(p1['seqnum'])>=s1 and int(p1['seqnum'])<s2:
                                         plog(q1,p1,connection)
                                         rep.pop(j)
                                         break
+                                if lrep==len(rep):
+                                    plog(q1,False,connection)
                             else:
                                 s1=int(q1['acknum'])
+                                lrep=len(rep)
                                 for j in range(len(rep)):
                                     p1=rep[j]
                                     if int(p1['seqnum'])>=s1:
                                         plog(q1,p1,connection)
                                         rep.pop(j)
                                         break
+                                if lrep==len(rep):
+                                    plog(q1,False,connection)
+                    elif req:
+                        req=sorted(req, key=itemgetter('seqnum'))
+                        for i in range(len(req)):
+                            q1=req[i]
+                            plog(q1,False,connection)
         except:
-            print "prc error"
+            pass
 
 def process(ptype):
     try:
         if ptype:
-            split()
+            if ptype==2:
+                checkconnection()
+            else:
+                split()
         else:
             prc()
     except:
         pass
 
-pool = Pool(16)
-pool.map(process,[1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0])
+pool = Pool(3)
+pool.map(process,[1,2,0])
 pool.close()
 pool.join()
