@@ -20,20 +20,8 @@ class StructuredMessage1(object):
     def __str__(self):
         return '%d-%s-%s-"%s"-%s-%d' % (self.time,self.sip,self.dip,self.request,self.state,self.durtime)
 
-class StructuredMessage2(object):
-    def __init__(self,time,sip,dip,result,durtime):
-        self.time=time
-        self.sip=sip
-        self.dip=dip
-        self.result=result
-        self.durtime=durtime
-    def __str__(self):
-        return '%d-%s-%s-"%s"-%d' % (self.time,self.sip,self.dip,self.result,self.durtime)
-
-_1=StructuredMessage1
-_2=StructuredMessage2
+_=StructuredMessage1
 LOG_FILENAME1 = '/var/log/sniffer/data'
-LOG_FILENAME2 = '/var/log/sniffer/connection'
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 
 my_logger1 = logging.getLogger('MyLogger1')
@@ -43,14 +31,6 @@ my_logger1.setLevel(logging.INFO)
 handler1 = logging.handlers.TimedRotatingFileHandler(LOG_FILENAME1,'M',30,0)
 handler1.suffix = "%Y%m%d%H%M.log"
 my_logger1.addHandler(handler1)
-
-my_logger2 = logging.getLogger('MyLogger2')
-my_logger2.propagate = False
-my_logger2.setLevel(logging.INFO)
-#handler = logging.handlers.RotatingFileHandler(LOG_FILENAME, maxBytes=10485760, backupCount=100)
-handler2 = logging.handlers.TimedRotatingFileHandler(LOG_FILENAME2,'M',30,0)
-handler2.suffix = "%Y%m%d%H%M.log"
-my_logger2.addHandler(handler2)
 
 
 def plog(q,p,connection):
@@ -67,7 +47,7 @@ def plog(q,p,connection):
     if len(src)>3:
         dip=src[0]+":"+src[1]
         sip=q['X-Forwarded-For'] if 'X-Forwarded-For' in q else src[2]
-    my_logger1.info(_1(q['time'],sip,dip,q['request'],state,durtime))
+    my_logger1.info(_(q['time'],sip,dip,q['request'],state,durtime))
     #print(str(q['time'])+"-"+sip+"-"+dip+"-"+q['request']+"-"+state+'-'+str(durtime))
 
 def clog(connection,c1,c2):
@@ -75,12 +55,12 @@ def clog(connection,c1,c2):
     if len(src)>3:
         dip=src[2]+":"+src[3]
         sip=src[0]
-    result='connection failed'
+    resultcode='999'
     durtime=0
     if c2:
-        result='connected'
+        resultcode='000'
         durtime=c2-c1
-    my_logger2.info(_2(c1,sip,dip,result,durtime))
+    my_logger1.info(_(c1,sip,dip,'connection',resultcode,durtime))
 
 def split():
     print "split start"
@@ -107,21 +87,23 @@ def checkconnection():
         try:
             k=h1.randomkey()
             if h2.exists(str(k)+"-sa"):
-                p1=h1.pipeline()
-                p1.get(k)
-                p1.delete(k)
-                t1=p1.execute()
-                p2=h2.pipeline()
-                p2.get(k+"-sa")
-                p2.delete(k+"-sa")
-                t2=p2.execute()
-                clog(k,int(t1[0]),int(t2[0]))
+                h1.delete(k)
+                h2.delete(str(k)+"-sa")
+                #p1=h1.pipeline()
+                #p1.get(k)
+                #p1.delete(k)
+                #t1=p1.execute()
+                #p2=h2.pipeline()
+                #p2.get(k+"-sa")
+                #p2.delete(k+"-sa")
+                #t2=p2.execute()
+                #clog(k,int(t1[0]),int(t2[0]))
             else:
                 t1=h1.get(k)
                 if t1:
                     t=int(t1)
-                    nowtime=int(time.time())
-                    if t<(nowtime-5):
+                    nowtime=int(time.time()*1000)
+                    if t<(nowtime-5000):
                         h1.delete(k)
                         clog(k,t,False)
         except:
