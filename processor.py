@@ -86,16 +86,16 @@ def checkconnection():
     while True:
         try:
             k=h1.randomkey()
-            if h2.exists(str(k)+"-sa"):
+            if h2.exists(str(k)):
                 h1.delete(k)
-                h2.delete(str(k)+"-sa")
+                h2.delete(k)
                 #p1=h1.pipeline()
                 #p1.get(k)
                 #p1.delete(k)
                 #t1=p1.execute()
                 #p2=h2.pipeline()
-                #p2.get(k+"-sa")
-                #p2.delete(k+"-sa")
+                #p2.get(k)
+                #p2.delete(k)
                 #t2=p2.execute()
                 #clog(k,int(t1[0]),int(t2[0]))
             else:
@@ -129,13 +129,19 @@ def prc():
                     datas=pipe.execute()
                     datas=datas[:-1]
                     for d in datas:
+                        reqseq=[]
+                        repseq=[]
                         data=eval(d)
                         if 'status' in data:
                             #response
-                            rep.append(data)
+                            if data['seqnum'] not in repseq:
+                                rep.append(data)
+                                repseq.append(data['seqnum'])
                         elif 'request' in data:
                             #request
-                            req.append(data)
+                            if data['seqnum'] not in reqseq:
+                                req.append(data)
+                                reqseq.append(data['seqnum'])
                     if req and rep:
                         #print "test"
                         req=sorted(req, key=itemgetter('seqnum'))

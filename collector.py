@@ -64,10 +64,11 @@ def pre():
                 fin=(flags & 1) 
                 
                 if syn==1 and ack==0:
-                    h1.set(str(s_addr)+':'+str(source_port)+'-'+str(d_addr)+':'+str(dest_port),int(round(time.time()*1000)))
+                    if not c.exists(str(s_addr)+':'+str(source_port)+'-'+str(d_addr)+':'+str(dest_port)):
+                        h1.set(str(s_addr)+':'+str(source_port)+'-'+str(d_addr)+':'+str(dest_port),int(round(time.time()*1000)))
                 elif syn==1 and ack==1:
-                    h2.set(str(d_addr)+':'+str(dest_port)+'-'+str(s_addr)+':'+str(source_port)+"-sa",int(round(time.time()*1000)))
-                    c.set(str(s_addr)+':'+str(source_port)+'-'+str(d_addr)+':'+str(dest_port),int(time.time()))
+                    h2.set(str(d_addr)+':'+str(dest_port)+'-'+str(s_addr)+':'+str(source_port),int(round(time.time()*1000)))
+                    c.set(str(d_addr)+':'+str(dest_port)+'-'+str(s_addr)+':'+str(source_port),int(time.time()))
                 else:
                     if c.exists(str(s_addr)+':'+str(source_port)+'-'+str(d_addr)+':'+str(dest_port)):
                         k=str(s_addr)+':'+str(source_port)+'-'+str(d_addr)+':'+str(dest_port)
@@ -85,7 +86,7 @@ def pre():
                     
                     if fin==1:
                         c.set(k,0)
-                    elif dest_port==80 and (data[0:3]=='GET' or data[0:4]=='POST'):
+                    elif data[0:3]=='GET' or data[0:4]=='POST':
                         dd=data.split('\r\n\r\n',1)[0]
                         da=dd.split('\r\n',1)
                         if len(da)==2:
