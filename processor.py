@@ -4,6 +4,8 @@ from multiprocessing import Pool, Queue
 import re
 import time
 import logging.handlers
+import socket
+from struct import unpack
 
 queue = Queue(0)
 #redisserver='10.9.132.201'
@@ -45,8 +47,8 @@ def plog(q,p,connection):
     dip="0.0.0.0:0"
     src=re.compile(":|-").split(connection)
     if len(src)>3:
-        dip=src[0]+":"+src[1]
-        sip=q['X-Forwarded-For'] if 'X-Forwarded-For' in q else src[2]
+        dip=src[2]+":"+src[3]
+        sip=(q['X-Forwarded-For'] if 'X-Forwarded-For' in q else src[0])+":"+src[1]
     my_logger1.info(_(q['time'],sip,dip,q['request'],state,durtime))
     #print(str(q['time'])+"-"+sip+"-"+dip+"-"+q['request']+"-"+state+'-'+str(durtime))
 
@@ -62,137 +64,185 @@ def clog(connection,c1,c2):
         durtime=c2-c1
     my_logger1.info(_(c1,sip,dip,'connection',resultcode,durtime))
 
-def split():
-    print "split start"
+def chkfin():
+    print "chkfin start"
+    r=redis.StrictRedis(host=redisserver, port=6379, db=1)
     c=redis.StrictRedis(host=redisserver, port=6379, db=2)
     while True:
         try:
             k=c.randomkey()
             if k:
-                connection=c.get(k)
-                #print connection
-                if connection:
-                    nowtime=int(time.time())
-                    t=int(connection)
-                    if t<(nowtime-300):
-                        queue.put_nowait(k)
-        except:
-            pass
-
-def checkconnection():
-    print "checkconnection start"
-    h1 = redis.StrictRedis(host=redisserver, port=6379, db=3)
-    h2 = redis.StrictRedis(host=redisserver, port=6379, db=4)
-    while True:
-        try:
-            k=h1.randomkey()
-            if h2.exists(str(k)):
-                h1.delete(k)
-                h2.delete(k)
-                #p1=h1.pipeline()
-                #p1.get(k)
-                #p1.delete(k)
-                #t1=p1.execute()
-                #p2=h2.pipeline()
-                #p2.get(k)
-                #p2.delete(k)
-                #t2=p2.execute()
-                #clog(k,int(t1[0]),int(t2[0]))
-            else:
-                t1=h1.get(k)
-                if t1:
-                    t=int(t1)
-                    nowtime=int(time.time()*1000)
-                    if t<(nowtime-5000):
-                        h1.delete(k)
-                        clog(k,t,False)
-        except:
-            pass
+                latesttime=c.get(k)
+                #print latesttime
+                if latesttime:
+                    nowtime=int(round(time.time()))
+                    t=int(latesttime)
+                    if t<(nowtime-10):
+                        dsize=r.llen(k)
+                        if dsize>3:
+                            pipe=r.pipeline()
+                            for i in reversed(range(dsize)):
+                                pipe.lindex(k,i)
+                            objs=pipe.execute()
+                            #print objs
+                            is_finack=False
+                            is_synack=False
+                            for d in objs:
+                                data=eval(d)
+                                
+                                packet=data['packet']
+                                tcp_header = packet[34:54]
+                                tcph = unpack('!HHLLBBHHH' , tcp_header)
+                                flags=tcph[5]
+                                ack=(flags & 16) >>4
+                                psh=(flags & 8) >>3
+                                rst=(flags & 4) >>2
+                                syn=(flags & 2) >>1
+                                fin=(flags & 1)
+                                if syn and ack:
+                                    is_synack=True
+                                
+                                if (fin and ack) or rst:
+                                    r.rename(k,k+"-fin")
+                                    c.delete(k)
+                                    queue.put_nowait(k)
+                                    is_finack=True
+                                    break;
+                            
+                            if not is_synack:
+                                #failed to handshake
+                                c.delete(k)
+                                r.delete(k)
+                                print k+"-failed to handshake"
+                                continue
+                                
+                            if not is_finack:
+                                #timeout to normally finish the connection
+                                if t<(nowtime-300):
+                                    c.delete(k)
+                                    queue.put_nowait(k)
+                                
+        except Exception,e:
+            print e
+            #pass
 
 def prc():
     print "prc start"
     r=redis.StrictRedis(host=redisserver, port=6379, db=1)
-    c=redis.StrictRedis(host=redisserver, port=6379, db=2)
     while True:
         try:
             connection=queue.get(1)
             if connection and len(connection)>0:
-                c.delete(connection)
-                datasize=r.llen(connection)
+                datasize=r.llen(connection+"-fin")
                 if datasize>0:
                     pipe=r.pipeline()
-                    req=[]
-                    rep=[]
-                    for i in range(datasize):
-                        pipe.lindex(connection,i)
-                    pipe.delete(connection)
-                    datas=pipe.execute()
-                    datas=datas[:-1]
-                    for d in datas:
-                        reqseq=[]
-                        repseq=[]
+                    for i in reversed(range(datasize)):
+                        pipe.lindex(connection+"-fin",i)
+                    pipe.delete(connection+"-fin")
+                    objs=pipe.execute()
+                    objs=objs[:-1]
+                    reqs=[]
+                    reps=[]
+                    for d in objs:
                         data=eval(d)
-                        if 'status' in data:
-                            #response
-                            if data['seqnum'] not in repseq:
-                                rep.append(data)
-                                repseq.append(data['seqnum'])
-                        elif 'request' in data:
-                            #request
-                            if data['seqnum'] not in reqseq:
-                                req.append(data)
-                                reqseq.append(data['seqnum'])
-                    if req and rep:
-                        #print "test"
-                        req=sorted(req, key=itemgetter('seqnum'))
-                        rep=sorted(rep, key=itemgetter('seqnum'))
-                        for i in range(len(req)):
-                            q1=req[i]
-                            if i+1<len(req):
-                                q2=req[i+1]
+                        #print data
+                        ptime=data['time']
+                        packet=data['packet']
+                        s_addr = socket.inet_ntoa(packet[26:30]);
+                        d_addr = socket.inet_ntoa(packet[30:34]);
+                        tcp_header = packet[34:54]
+                        tcph = unpack('!HHLLBBHHH' , tcp_header)
+                        source_port = str(tcph[0])
+                        dest_port = str(tcph[1])
+                        sequence = tcph[2]
+                        acknowledgement = tcph[3]
+                        doff_reserved = tcph[4]
+                        flags=tcph[5]
+                        tcph_length = doff_reserved >> 4
+                        ack=(flags & 16) >>4
+                        psh=(flags & 8) >>3
+                        rst=(flags & 4) >>2
+                        syn=(flags & 2) >>1
+                        fin=(flags & 1)
+                        h_size = 34 + tcph_length * 4
+                        data = packet[h_size:]
+                        
+                        #print str(ptime)+"-"+s_addr+":"+source_port+"-"+d_addr+":"+dest_port+"-"+str(ack)+str(psh)+str(rst)+str(syn)+str(fin)+"-"+str(sequence)+"-"+str(acknowledgement)+"-"+str(len(data))+"\n"
+                        
+                        if data[0:3]=='GET' or data[0:4]=='POST':
+                            dd=data.split('\r\n\r\n',1)[0]
+                            da=dd.split('\r\n',1)
+                            if len(da)==2:
+                                d1=da[0]
+                                d2=da[1]
+                                req=dict(re.findall(r"(?P<name>.*?): (?P<value>.*?)\r\n", d2))
+                                req['request']=d1
+                                req['time']=ptime
+                                req['seqnum']=sequence
+                                req['acknum']=acknowledgement
+                                reqs.append(req)
+                        elif data[0:4]=='HTTP':
+                            dd=data.split('\r\n\r\n',1)[0]
+                            da=dd.split('\r\n',1)
+                            if len(da)==2:
+                                d1=da[0]
+                                d2=da[1]
+                                rep=dict(re.findall(r"(?P<name>.*?): (?P<value>.*?)\r\n", d2))
+                                rep['status']=d1
+                                rep['seqnum']=sequence
+                                rep['acknum']=acknowledgement
+                                rep['time']=ptime
+                                reps.append(rep)
+                                
+                    if reqs and reps:
+                        reqs=sorted(reqs, key=itemgetter('seqnum'))
+                        reps=sorted(reps, key=itemgetter('seqnum'))
+                        for i in range(len(reqs)):
+                            q1=reqs[i]
+                            if i+1<len(reqs):
+                                q2=reqs[i+1]
                                 s1=int(q1['acknum'])
                                 s2=int(q2['acknum'])
-                                lrep=len(rep)
+                                lrep=len(reps)
                                 for j in range(lrep):
-                                    p1=rep[j]
+                                    p1=reps[j]
                                     if int(p1['seqnum'])>=s1 and int(p1['seqnum'])<s2:
                                         plog(q1,p1,connection)
-                                        rep.pop(j)
+                                        reps.pop(j)
                                         break
-                                if lrep==len(rep):
+                                if lrep==len(reps):
                                     plog(q1,False,connection)
                             else:
                                 s1=int(q1['acknum'])
-                                lrep=len(rep)
-                                for j in range(len(rep)):
-                                    p1=rep[j]
+                                lrep=len(reps)
+                                for j in range(len(reps)):
+                                    p1=reps[j]
                                     if int(p1['seqnum'])>=s1:
                                         plog(q1,p1,connection)
-                                        rep.pop(j)
+                                        reps.pop(j)
                                         break
-                                if lrep==len(rep):
+                                if lrep==len(reps):
                                     plog(q1,False,connection)
-                    elif req:
-                        req=sorted(req, key=itemgetter('seqnum'))
-                        for i in range(len(req)):
-                            q1=req[i]
+                    elif reqs:
+                        reqs=sorted(reqs, key=itemgetter('seqnum'))
+                        for i in range(len(reqs)):
+                            q1=reqs[i]
                             plog(q1,False,connection)
-        except:
-            pass
+                        
+        except Exception,e:
+            print e
+            #pass
 
 def process(ptype):
     try:
         if ptype:
-            if ptype==2:
-                checkconnection()
-            else:
-                split()
+            chkfin()
         else:
             prc()
     except:
         pass
 
-pool = Pool(3)
-pool.map(process,[1,2,0])
+pool = Pool(2)
+pool.map(process,[1,0])
 pool.close()
 pool.join()
