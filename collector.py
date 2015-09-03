@@ -3,13 +3,17 @@ import redis
 import time
 from multiprocessing import Pool, Queue
 from struct import unpack
+import base64
 
 queue0 = Queue(0)
-mirrorport='eno16777736'
-#mirrorport='eth1'
-serverip=['192.168.3.10']
-#redisserver='10.9.132.201'
-redisserver='127.0.0.1'
+queue1 = Queue(0)
+#mirrorport='eno16777736'
+mirrorport='eth2'
+serverip=['10.10.111.35','10.10.111.36','10.10.104.191','10.10.104.192','10.10.108.77','10.221.188.37']
+xserverip=['38.1.172.31']
+redisserver='10.9.132.202'
+#redisserver='127.0.0.1'
+timezone=8*3600
 
 def sniffe():
     try:
@@ -20,8 +24,11 @@ def sniffe():
         print 'Socket could not be created.'
         sys.exit()
     serveripn=[]
+    xserveripn=[]
     for ip in serverip:
         serveripn.append(socket.inet_aton(ip))
+    for ip in xserverip:
+        xserveripn.append(socket.inet_aton(ip))
     while True:
         try:
             packet = s1.recvfrom(65536)
@@ -29,12 +36,15 @@ def sniffe():
             if packet[12:13]=='\x08' and packet[23]=='\x06':
                 if packet[26:30] in serveripn or packet[30:34] in serveripn:
                     queue0.put_nowait(packet)
+                if packet[26:30] in xserveripn or packet[30:34] in xserveripn:
+                    queue1.put_nowait(packet)
         except:
             pass
 
 def pre():
     r = redis.StrictRedis(host=redisserver, port=6379, db=1)
     c = redis.StrictRedis(host=redisserver, port=6379, db=2)
+    e = redis.StrictRedis(host=redisserver, port=6379, db=3)
     while True:
         try:
             packet=queue0.get()
@@ -53,36 +63,67 @@ def pre():
                 pipe.exists(k2)
                 t=pipe.execute()
                 if t[0]:
-                    c.set(k1,int(time.time()))
+                    c.set(k1,int(time.time()+timezone))
                     obj={}
-                    obj['time']=int(round(time.time()*1000))
-                    obj['packet']=packet
+                    obj['time']=int(round((time.time()+timezone)*1000))
+                    obj['packet']=base64.b64encode(packet)
                     r.lpush(k1,obj)
                 elif t[1]:
-                    c.set(k2,int(time.time()))
+                    c.set(k2,int(time.time()+timezone))
                     obj={}
-                    obj['time']=int(round(time.time()*1000))
-                    obj['packet']=packet
+                    obj['time']=int(round((time.time()+timezone)*1000))
+                    obj['packet']=base64.b64encode(packet)
                     r.lpush(k2,obj)
                 else:
-                    c.set(k1,int(time.time()))
+                    c.set(k1,int(time.time()+timezone))
                     obj={}
-                    obj['time']=int(round(time.time()*1000))
-                    obj['packet']=packet
+                    obj['time']=int(round((time.time()+timezone)*1000))
+                    obj['packet']=base64.b64encode(packet)
                     r.lpush(k1,obj)
+        except:
+            pass
+
+def xpre():
+    x = redis.StrictRedis(host=redisserver, port=6379, db=3)
+    while True:
+        try:
+            packet=queue1.get()
+            if packet:
+                s_addr = socket.inet_ntoa(packet[26:30]);
+                d_addr = socket.inet_ntoa(packet[30:34]);
+                tcp_header = packet[34:38]
+                tcph = unpack('!HH' , tcp_header)
+                source_port = str(tcph[0])
+                dest_port = str(tcph[1])
+                k1=s_addr+":"+source_port+"-"+d_addr+":"+dest_port
+                k2=d_addr+":"+dest_port+"-"+s_addr+":"+source_port
+                #print k1
+                pipe=x.pipeline()
+                pipe.exists(k1)
+                pipe.exists(k2)
+                t=pipe.execute()
+                if t[0]:
+                    x.set(k1,int(time.time()+timezone))
+                elif t[1]:
+                    x.set(k2,int(time.time()+timezone))
+                else:
+                    x.set(k1,int(time.time()+timezone))
         except:
             pass
 
 def process(ptype):
     try:
         if ptype:
-            sniffe()
+            if ptype==1:
+                sniffe()
+            elif ptype==2:
+                xpre()
         else:
             pre()
     except:
         pass
 
-pool = Pool(2)
-pool.map(process,[1,0])
+pool = Pool(8)
+pool.map(process,[1,1,1,1,1,1,1,0])
 pool.close()
 pool.join()
